@@ -4,12 +4,13 @@ use std::io::{Error, ErrorKind};
 use yahoo_finance_api as yahoo;
 use async_std;
 use async_trait::async_trait;
+use futures::join;
 
 #[derive(Clap)]
 #[clap(
-    version = "1.0",
-    author = "Claus Matzinger",
-    about = "A Manning LiveProject: async Rust"
+version = "1.0",
+author = "Claus Matzinger",
+about = "A Manning LiveProject: async Rust"
 )]
 struct Opts {
     #[clap(short, long, default_value = "AAPL,MSFT,UBER,GOOG")]
@@ -23,7 +24,6 @@ struct Opts {
 ///
 #[async_trait]
 trait StockSignal {
-
     ///
     /// The signal's data type.
     ///
@@ -70,7 +70,7 @@ impl StockSignal for PriceDifference {
 /// Window function to create a simple moving average
 ///
 struct WindowedSMA {
-    window_size: usize
+    window_size: usize,
 }
 
 #[async_trait]
@@ -161,12 +161,21 @@ async fn main() -> std::io::Result<()> {
     for symbol in opts.symbols.split(',') {
         let closes = fetch_closing_data(&symbol, &from, &to).await?;
         if !closes.is_empty() {
-                // min/max of the period. unwrap() because those are Option types
-                let period_max: f64 = MaxPrice{}.calculate(&closes).await.unwrap();
-                let period_min: f64 = MinPrice{}.calculate(&closes).await.unwrap();
-                let last_price = *closes.last().unwrap_or(&0.0);
-                let (_, pct_change) = PriceDifference{}.calculate(&closes).await.unwrap_or((0.0, 0.0));
-                let sma = WindowedSMA{window_size: 30}.calculate(&closes).await.unwrap_or_default();
+            let (period_max_o, period_min_o, price_diff_o, sma_o) =
+                join!(
+                    MaxPrice{}.calculate(&closes),
+                    MinPrice{}.calculate(&closes),
+                    PriceDifference{}.calculate(&closes),
+                    WindowedSMA{window_size: 30}.calculate(&closes)
+                );
+
+            // min/max of the period. unwrap() because those are Option types
+            let period_max: f64 = period_max_o.unwrap();
+            let period_min: f64 = period_min_o.unwrap();
+            let last_price = *closes.last().unwrap_or(&0.0);
+            let (_, pct_change) = price_diff_o.unwrap_or((0.0, 0.0));
+            let sma = sma_o.unwrap_or_default();
+
 
             // a simple way to output CSV data
             println!(
@@ -187,6 +196,7 @@ async fn main() -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     #![allow(non_snake_case)]
+
     use super::*;
 
     #[async_std::test]
